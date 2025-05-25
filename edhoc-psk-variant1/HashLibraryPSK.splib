@@ -1,0 +1,179 @@
+// Hash Library for EDHOC PSK Variant 1
+// Simplified version adapted from lake-draft14/HashLibrary.splib
+
+// Hash function modeling for PSK authentication
+// This version focuses on the hash functions needed for EDHOC PSK variant 1
+
+functions: 
+    hash/1,                // Main hash function
+    hkdfextract/2,         // HKDF-Extract function
+    hkdfexpand/2,          // HKDF-Expand function
+    edhoc_kdf/4,           // EDHOC key derivation function
+    wrap/1                 // Wrapper for data serialization
+
+// Hash collision modeling (optional, for advanced security analysis)
+#ifdef HashCollisions
+
+functions: 
+    col1/2, col2/2,        // Collision functions
+    colip1/1, colip2/1,    // Collision inverse functions
+    sndpre/1, pre/1,       // Preimage functions
+    constcol1/0, constcol2/0 // Collision constants
+
+// Hash constraint: hash outputs must come from hash evaluation
+restriction originHash:
+    "All x hs #i. HashC(x,hs)@i ==> (Ex #j. HashE(x,hs)@j & j < i)"
+
+// Deterministic hash function
+restriction deterministic: 
+    "All x1 x2 h1 h2 #i #j. HashE(x1,h1)@i & HashE(x2,h2)@j & x1 = x2 ==> #i = #j"
+
+#endif
+
+// Hash domain freshness (for advanced modeling)
+#ifdef FreshDomain
+
+// HashE(x,y) stores that y = hash(x)
+rule hashVals:
+    [Fr(~n)] --> [!HashVals(~n)]
+
+rule createHash:
+    [!HashVals(~n)] --[HashE(x,~n), HV(~n)]-> []
+
+rule attHash:
+    [In(x), !HashVals(~hs)] --[HashC(x,~hs)]-> [Out(~hs)]
+
+lemma hashOrigin[sources]:
+    "All x hs #i. HashC(x,hs)@i ==> (Ex #j. HV(hs)@j & j < i) | (Ex #j. KU(hs)@j & j < i)"
+
+#endif
+
+// Standard hash function modeling (default)
+#ifdef not FreshDomain & not HashCollisions
+
+// Simple hash function rule for attacker
+rule Hash:
+    [In(x)] --> [Out(hash(x))]
+
+// HKDF-Extract rule  
+rule HKDFExtract:
+    [In(salt), In(ikm)] --> [Out(hkdfextract(salt, ikm))]
+
+// HKDF-Expand rule
+rule HKDFExpand:
+    [In(prk), In(info)] --> [Out(hkdfexpand(prk, info))]
+
+// EDHOC KDF rule
+rule EDHOCKDF:
+    [In(prk), In(label), In(context), In(length)] --> [Out(edhoc_kdf(prk, label, context, length))]
+
+#endif
+
+// ********************************************************************
+// ************** PSK-Specific Hash Operations ************************
+// ********************************************************************
+
+// Transcript hash computation for PSK variant 1
+// TH_1 = hash(method || suites_I || G_X || C_I || ID_CRED_PSK || EAD_1)
+let ComputeTH1_PSK(method, suitesI, G_X, C_I, ID_CRED_PSK, EAD_1) =
+    hash(wrap(method) || wrap(suitesI) || wrap(G_X) || wrap(C_I) || wrap(ID_CRED_PSK) || EAD_1)
+
+// TH_2 = hash(G_Y || C_R || TH_1)  
+let ComputeTH2_PSK(G_Y, C_R, TH_1) =
+    hash(wrap(G_Y) || C_R || wrap(TH_1))
+
+// TH_3 = hash(TH_2 || PLAINTEXT_2 || CRED_PSK)
+let ComputeTH3_PSK(TH_2, PLAINTEXT_2, CRED_PSK) =
+    hash(wrap(TH_2) || PLAINTEXT_2 || CRED_PSK)
+
+// TH_4 = hash(TH_3 || PLAINTEXT_3 || CRED_PSK)
+let ComputeTH4_PSK(TH_3, PLAINTEXT_3, CRED_PSK) =
+    hash(wrap(TH_3) || PLAINTEXT_3 || CRED_PSK)
+
+// ********************************************************************
+// ************** Key Derivation Functions ****************************
+// ********************************************************************
+
+// PSK-based key derivation for variant 1
+// PRK_2e = HKDF-Extract(null, G_XY)
+let DerivePRK2e(G_XY) =
+    hkdfextract('null', G_XY)
+
+// SALT_3e2m = EDHOC-KDF(PRK_2e, "SALT_3e2m", TH_2, hash_length)
+let DeriveSalt3e2m(PRK_2e, TH_2) =
+    edhoc_kdf(PRK_2e, 'SALT_3e2m', TH_2, hash_length)
+
+// PRK_3e2m = HKDF-Extract(SALT_3e2m, CRED_PSK)
+let DerivePRK3e2m(SALT_3e2m, CRED_PSK) =
+    hkdfextract(SALT_3e2m, CRED_PSK)
+
+// MAC_2 computation for PSK variant 1
+let ComputeMAC2_PSK(PRK_3e2m, context_2) =
+    edhoc_kdf(PRK_3e2m, 'MAC_2', context_2, edhoc_mac_length)
+
+// Keystream for message 2 encryption
+let DeriveKeystream2(PRK_2e, TH_2) =
+    edhoc_kdf(PRK_2e, 'KEYSTREAM_2', TH_2, plaintext_length)
+
+// AEAD key and IV for message 3
+let DeriveAEADKeys3(PRK_4e3m, TH_3) =
+    let K_3 = edhoc_kdf(PRK_4e3m, 'K_3', TH_3, key_length) in
+    let IV_3 = edhoc_kdf(PRK_4e3m, 'IV_3', TH_3, iv_length) in
+    (K_3, IV_3)
+
+// Session key derivation
+let DeriveSessionKeys(PRK_4e3m, TH_4) =
+    let PRK_out = edhoc_kdf(PRK_4e3m, 'PRK_out', TH_4, hash_length) in
+    let K_out = edhoc_kdf(PRK_out, 'K_out', TH_4, key_length) in
+    (PRK_out, K_out)
+
+// ********************************************************************
+// ************** Hash Security Properties ****************************
+// ********************************************************************
+
+// One-way property of hash function
+lemma hash_oneway:
+    "All x #i #j. HashE(x, hash(x))@i & KU(x)@j ==> Ex #k. KU(x)@k & k < i"
+
+// Collision resistance (if collision modeling is enabled)
+#ifdef HashCollisions
+lemma collision_resistance:
+    "All x1 x2 #i #j. HashE(x1, h)@i & HashE(x2, h)@j & not(x1 = x2) ==> F"
+#endif
+
+// Second preimage resistance
+lemma second_preimage_resistance:
+    "All x1 x2 h #i #j. HashE(x1, h)@i & HashE(x2, h)@j & not(x1 = x2) ==> F"
+
+// ********************************************************************
+// ************** HKDF Security Properties ****************************
+// ********************************************************************
+
+// HKDF-Extract produces pseudorandom output from pseudorandom input
+lemma hkdf_extract_security:
+    "All salt ikm prk #i #j. 
+     HKDFExtractE(salt, ikm, prk)@i & KU(prk)@j & SecretInput(ikm)@i 
+     ==> Ex #k. KU(ikm)@k | Ex #l. KU(salt)@l"
+
+// EDHOC-KDF output security 
+lemma edhoc_kdf_security:
+    "All prk label context length output #i #j.
+     EDHOCKDFEvent(prk, label, context, length, output)@i & KU(output)@j & SecretPRK(prk)@i
+     ==> Ex #k. KU(prk)@k"
+
+// ********************************************************************
+// ************** PSK Hash Context Modeling ***************************
+// ********************************************************************
+
+// Model the context for MAC_2 computation in PSK variant 1
+// context_2 = C_R || ID_CRED_PSK || TH_2 || CRED_PSK || ? EAD_2
+let BuildContext2_PSK(C_R, ID_CRED_PSK, TH_2, CRED_PSK, EAD_2) =
+    wrap(C_R) || wrap(ID_CRED_PSK) || wrap(TH_2) || CRED_PSK || EAD_2
+
+// Model the authenticated data for AEAD operations
+let BuildAAD_PSK(TH_3) = 
+    wrap(TH_3)
+
+// Model the external authenticated data for message 3
+let BuildExternalAAD_PSK(TH_3) =
+    wrap(TH_3)

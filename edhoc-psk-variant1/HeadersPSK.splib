@@ -1,0 +1,184 @@
+// Headers and library inclusions for EDHOC PSK Variant 1
+// Adapted from lake-draft14/Headers.splib for PSK authentication
+
+// Hash function handling
+#ifdef CollapseHash
+functions: hout/0
+equations: hash(x)=hout
+#endif
+
+// PSK authentication doesn't use signatures, so we define PSK-specific functions
+// instead of signature-related functions
+
+functions:
+    // PSK-related functions
+    psk_cred/1,            // PSK credential
+    psk_id/1,              // PSK identifier (ID_CRED_PSK)
+    get_psk/1 [destructor], // Extract PSK from credential
+    
+    // Method identifier for PSK variant 1
+    method_psk_variant1/0,
+    
+    // Basic cryptographic functions (not signature-based)
+    hash/1,                // Hash function
+    hkdfextract/2,         // HKDF-Extract
+    hkdfexpand/2,          // HKDF-Expand
+    edhoc_kdf/4,           // EDHOC key derivation function
+    aeadenc/4,             // AEAD encryption
+    aeaddec/3 [destructor], // AEAD decryption
+    
+    // Utility functions
+    wrap/1,                // Wrapper for encoding
+    decxor/2,              // XOR decryption for stream cipher
+    check_grp/1,           // Group element validation
+    grpid/0,               // Group identifier
+    
+    // Constants
+    suitesIConst/0, suitesRConst/0,
+    error_code_one/0, error_code_two/0,
+    
+    // Cryptographic parameters
+    hash_length/0, edhoc_mac_length/0, key_length/0, 
+    iv_length/0, plaintext_length/0
+
+equations: 
+    // Basic equations for PSK handling
+    get_psk(psk_cred(psk)) = psk,
+    aeaddec(aeadenc(m,r,k,ad),k,ad) = m
+
+// Global restrictions for security modeling
+restriction Equality:
+    "All x y #i. Eq(x,y) @i ==> x = y"
+
+restriction Inequality: 
+    "All x #i. Neq(x,x) @i ==> F"
+
+// Honest PSK restrictions - each PSK is only marked honest once
+restriction OnlyOnceHonestPSK:
+    "All psk_id #i #j. HonestPSK(psk_id)@i & HonestPSK(psk_id)@j ==> #i = #j"
+
+// PSK setup restrictions - each PSK should only be established once between parties
+restriction UniquePSKSetup:
+    "All psk_id id_cred_psk #i #j. 
+     PSKSetup(psk_id,id_cred_psk)@i & PSKSetup(psk_id,id_cred_psk)@j ==> #i = #j"
+
+// Connection ID uniqueness
+restriction UniqueConnectionID:
+    "All cid #i #j. NewCID(cid)@i & NewCID(cid)@j ==> #i = #j"
+
+// DH group element validation restriction
+restriction ValidDHElement:
+    "All g #i. ValidElement(g)@i ==> check_grp(g) = grpid"
+
+// ********************************************************************
+// ************** Compromise Models ***********************************
+// ********************************************************************
+
+// PSK compromise model - allows attacker to learn PSKs for security analysis
+let CompromisePSK(psk) = 
+    event CompromisePSK(psk);
+    out(psk)
+
+// Ephemeral share compromise model - allows attacker to learn ephemeral shares
+let CompromiseShare(x) = 
+    event LeakShare(x);
+    out(x)
+
+// Session key compromise model - allows attacker to learn session keys
+let CompromiseSessionKey(k) = 
+    event LeakSessionKey(k);
+    out(k)
+
+// ********************************************************************
+// ************** Event Definitions ***********************************
+// ********************************************************************
+
+/*
+Event definitions for PSK variant 1 security analysis:
+
+Protocol Events:
+- InitiatorStart_PSK: Initiator begins PSK authentication
+- ResponderStart_PSK: Responder begins PSK authentication  
+- AcceptI_PSK: Initiator completes protocol
+- AcceptR_PSK: Responder completes protocol
+- DerivedR_PSK: Responder derives session key
+- SessionSecrets_I/R: Track session-specific secrets
+
+Security Events:
+- HonestPSK: Mark PSK as belonging to honest parties
+- CompromisePSK: PSK is compromised
+- LeakShare: Ephemeral share is leaked
+- LeakSessionKey: Session key is leaked
+- PSKGenerated: Fresh PSK is generated
+
+Data Authentication Events:
+- AcceptIData_PSK: Initiator accepts authenticated data
+- AcceptRData_PSK: Responder accepts authenticated data
+- SendRData_PSK: Responder sends authenticated data
+*/
+
+// ********************************************************************
+// ************** Helper Functions ************************************
+// ********************************************************************
+
+// PSK credential creation helper
+let CreatePSKCredential(psk, kid) =
+    let cred_psk = psk_cred(psk) in
+    let id_cred_psk = psk_id(kid) in
+    (cred_psk, id_cred_psk)
+
+// Transcript hash computation helper for PSK variant 1
+let ComputeTranscriptHashes(method, suitesI, G_X, C_I, ID_CRED_PSK, EAD_1, G_Y, C_R, EAD_2) =
+    let TH_1 = hash(wrap(method) || wrap(suitesI) || wrap(G_X) || wrap(C_I) || wrap(ID_CRED_PSK) || EAD_1) in
+    let TH_2 = hash(wrap(G_Y) || C_R || wrap(TH_1)) in
+    (TH_1, TH_2)
+
+// PSK-based key derivation helper for variant 1
+let PSKKeyDerivation(G_YX, TH_2, CRED_PSK) =
+    let PRK_2e = hkdfextract('null', G_YX) in
+    let SALT_3e2m = edhoc_kdf(PRK_2e, 'salt_3e2m', TH_2, hash_length) in
+    let PRK_3e2m = hkdfextract(SALT_3e2m, CRED_PSK) in
+    let PRK_4e3m = PRK_3e2m in
+    (PRK_2e, PRK_3e2m, PRK_4e3m)
+
+// Message encryption/decryption helpers
+let EncryptMessage2(PRK_2e, TH_2, plaintext) =
+    let KEYSTREAM_2 = edhoc_kdf(PRK_2e, 'keystream_2', TH_2, plaintext_length) in
+    decxor(plaintext, KEYSTREAM_2)
+
+let DecryptMessage2(PRK_2e, TH_2, ciphertext) =
+    let KEYSTREAM_2 = edhoc_kdf(PRK_2e, 'keystream_2', TH_2, plaintext_length) in
+    decxor(ciphertext, KEYSTREAM_2)
+
+// AEAD encryption for message 3
+let EncryptMessage3(PRK_4e3m, TH_3, plaintext, aad) =
+    let K_3 = edhoc_kdf(PRK_4e3m, 'K_3', TH_3, key_length) in
+    let IV_3 = edhoc_kdf(PRK_4e3m, 'IV_3', TH_3, iv_length) in
+    let ciphertext = aeadenc(plaintext, IV_3, K_3, aad) in
+    (K_3, IV_3, ciphertext)
+
+// AEAD decryption for message 3
+let DecryptMessage3(PRK_4e3m, TH_3, ciphertext, aad) =
+    let K_3 = edhoc_kdf(PRK_4e3m, 'K_3', TH_3, key_length) in
+    let IV_3 = edhoc_kdf(PRK_4e3m, 'IV_3', TH_3, iv_length) in
+    aeaddec(ciphertext, K_3, aad)
+
+// Session key derivation
+let DeriveSessionKey(PRK_4e3m, TH_4, label) =
+    edhoc_kdf(PRK_4e3m, label, TH_4, key_length)
+
+// ********************************************************************
+// ************** Security Properties Helpers *************************
+// ********************************************************************
+
+// Check if parties are using the same PSK
+let SamePSK(psk_id1, psk_id2) =
+    if psk_id1 = psk_id2 then true else false
+
+// Validate message flow ordering
+let ValidMessageFlow(msg1_time, msg2_time, msg3_time) =
+    if (msg1_time < msg2_time) && (msg2_time < msg3_time) then true else false
+
+// Check honest party participation
+let BothHonest(psk_id1, psk_id2) =
+    event CheckHonesty(psk_id1, psk_id2)

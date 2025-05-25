@@ -1,0 +1,17 @@
+filename; method; result; time;
+edhoc-psk-variant1spthy--lemmasecretShares-DLeakSharetamarin-prover; tamarin-prover; ; 150;
+edhoc-psk-variant1spthy--lemmahonestauthIRPSKnoninj-DLeakSharetamarin-prover; tamarin-prover;   honestauthIR_PSK_non_inj (all-traces): verified (5 steps) ; 1649;
+edhoc-psk-variant1spthy--lemmasessionKeyAgreementPSKtamarin-prover; tamarin-prover;   sessionKeyAgreement_PSK (all-traces): verified (5 steps) ; 1699;
+edhoc-psk-variant1spthy--lemmasecretPSK-DLeakPSKtamarin-prover; tamarin-prover;   secretPSK (all-traces): verified (11 steps) ; 1714;
+edhoc-psk-variant1spthy--lemmahonestauthRIPSKnoninj-DLeakSharetamarin-prover; tamarin-prover;   honestauthRI_PSK_non_inj (all-traces): verified (8 steps) ; 1720;
+edhoc-psk-variant1spthy--lemmasecretIPSK-DLeakSessionKeytamarin-prover; tamarin-prover;   secretI_PSK (all-traces): verified (5 steps) ; 1767;
+edhoc-psk-variant1spthy--lemmasecretRPSK-DLeakSessionKeytamarin-prover; tamarin-prover;   secretR_PSK (all-traces): verified (8 steps) ; 1768;
+edhoc-psk-variant1spthy--lemmaforwardSecrecyPSK-DLeakSessionKey-DLeakSharetamarin-prover; tamarin-prover;   forwardSecrecy_PSK (all-traces): verified (8 steps) ; 1771;
+edhoc-psk-variant1spthy--lemmapskidentityprivacyvariant1tamarin-prover; tamarin-prover; ; 131;
+edhoc-psk-variant1spthy--lemmasecretRks2PSK-DLeakSessionKey-DLeakSharetamarin-prover; tamarin-prover; ; 626;
+edhoc-psk-variant1spthy--lemmadataauthenticationRtoIPSK-DLeakSharetamarin-prover; tamarin-prover; ; 626;
+edhoc-psk-variant1spthy--lemmasecretRk3PSK-DLeakSessionKey-DLeakSharetamarin-prover; tamarin-prover; ; 626;
+edhoc-psk-variant1spthy--lemmanoreflectionattacksRIPSK-DLeakSharetamarin-prover; tamarin-prover; ; 626;
+edhoc-psk-variant1spthy--lemmadataauthenticationItoRPSK-DLeakSharetamarin-prover; tamarin-prover; ; 626;
+edhoc-psk-variant1spthy--lemmanoreflectionattacksIRPSK-DLeakSharetamarin-prover; tamarin-prover; ; 626;
+edhoc-psk-variant1spthy--lemmasecretRPRK2ePSK-DLeakSessionKey-DLeakSharetamarin-prover; tamarin-prover; ; 626;

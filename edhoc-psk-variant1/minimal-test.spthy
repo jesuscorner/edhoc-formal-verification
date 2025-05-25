@@ -1,0 +1,49 @@
+theory minimal_psk_test
+
+begin
+
+builtins: diffie-hellman
+
+functions: 
+    psk_cred/1,
+    psk_id/1,
+    get_psk/1 [destructor]
+
+equations: 
+    get_psk(psk_cred(psk)) = psk
+
+let SimpleI(~psk) =
+    new ~x;
+    let gx = 'g'^~x in
+    event InitStart(~psk);
+    out(gx);
+    in(gy);
+    let shared = gy^~x in
+    event InitAccept(~psk, shared);
+    0
+
+let SimpleR(~psk) = 
+    in(gx);
+    new ~y;
+    let gy = 'g'^~y in
+    event RespStart(~psk);
+    out(gy);
+    let shared = gx^~y in
+    event RespAccept(~psk, shared);
+    0
+
+let Setup() =
+    new ~psk;
+    event PSKGen(~psk);
+    (SimpleI(~psk) | SimpleR(~psk))
+
+process: Setup()
+
+lemma executable:
+    exists-trace
+    "Ex psk shared #i #j. InitAccept(psk, shared)@i & RespAccept(psk, shared)@j"
+
+lemma psk_secret:
+    "All psk #i #j. PSKGen(psk)@i & KU(psk)@j ==> F"
+
+end

@@ -1,0 +1,288 @@
+// PSK-specific security properties for EDHOC PSK Variant 1
+// Based on draft-lopez-lake-edhoc-psk-01 and RFC 9528
+// Adapted from the main LakeProperties.splib for PSK authentication
+
+// ********************************************************************
+// ************** Sanity Check ****************************************
+// ********************************************************************
+
+// Sanity checks for the executability of the PSK variant 1 protocol
+
+#ifdef SanityChecks
+
+lemma executableR_psk_variant1[output=[proverif]]: // sanity check
+    exists-trace
+    "Ex cid psk_id id_cred_psk k3 ko #i. AcceptR_PSK(cid,method_psk_variant1,psk_id,id_cred_psk,k3,ko)@i"
+
+lemma executableI_psk_variant1[output=[proverif]]: // sanity check
+    exists-trace
+    "Ex cid psk_id id_cred_psk k3 k4 ko #i. AcceptI_PSK(cid,method_psk_variant1,psk_id,id_cred_psk,k3,k4,ko)@i"
+
+lemma executableHonest_psk_variant1[output=[proverif]]: // sanity check with honest parties
+    exists-trace
+    "Ex cid psk_id id_cred_psk k3 ko #i #j #k. AcceptR_PSK(cid,method_psk_variant1,psk_id,id_cred_psk,k3,ko)@i & 
+     HonestPSK(psk_id)@j & HonestPSK(id_cred_psk)@k"
+
+#endif
+
+// ****************************************************************
+// ************** Helper Lemmas ***********************************
+// ****************************************************************
+
+// PSK secrecy - PSKs should remain secret unless explicitly compromised
+lemma secretPSK[reuse]: 
+   "All psk #i #j. PSKGenerated(psk)@i & KU(psk)@j 
+    ==> Ex #t. CompromisePSK(psk)@t"
+
+// Ephemeral share secrecy (unless explicitly leaked for security analysis)
+#ifdef not LeakShare
+lemma secretShares[reuse]: 
+   "All k #i #j. Share(k)@i & KU(k)@j 
+    ==> F"
+#endif
+
+// *********************************************************************
+// ************** Confidentiality (PSK Variant 1)  *******************
+// *********************************************************************
+
+/*
+PSK Variant 1 Confidentiality Properties:
+
+- Forward secrecy: Compromise of PSK does not compromise past session keys
+- Session key independence: Compromise of one session key does not affect others
+- Key secrecy: Session keys remain secret unless PSK is compromised or shares are leaked
+
+Note: In PSK variant 1, ID_CRED_PSK is sent in clear in message_1, 
+which affects privacy but not confidentiality of derived keys.
+*/
+
+// Responder's view of session key secrecy
+lemma secretR_PSK: 
+   "All cid psk_id id_cred_psk k3 ko y gx #i #j #k. 
+    AcceptR_PSK(cid,method_psk_variant1,psk_id,id_cred_psk,k3,ko)@i & 
+    SessionSecrets_R(cid,y,gx,ko)@i &
+    KU(ko)@j & HonestPSK(psk_id)@k 
+    ==> (Ex #t. CompromisePSK(psk_id)@t & t < i)        // PSK was compromised before
+        | (Ex #t. LeakSessionKey(ko)@t)                 // or session key was leaked
+        | (Ex #t. LeakShare(y)@t)                       // or responder share was leaked  
+        | (Ex #t. LeakShare(gx)@t)                      // or initiator share was leaked
+    "
+
+// Initiator's view of session key secrecy
+lemma secretI_PSK: 
+    "All cid psk_id id_cred_psk k3 k4 ko x gy #i #j #k. 
+     AcceptI_PSK(cid,method_psk_variant1,psk_id,id_cred_psk,k3,k4,ko)@i &
+     SessionSecrets_I(cid,x,gy,ko)@i &
+     KU(ko)@j & HonestPSK(psk_id)@k
+     ==> (Ex #t. CompromisePSK(psk_id)@t & t < i)       // PSK was compromised before
+         | (Ex #t. LeakSessionKey(ko)@t)                // or session key was leaked
+         | (Ex #t. LeakShare(x)@t)                      // or initiator share was leaked
+         | (Ex #t. LeakShare(gy)@t)                     // or responder share was leaked
+	"
+
+// Forward secrecy for PSK variant 1
+// Past session keys remain secure even if PSK is later compromised
+lemma forwardSecrecy_PSK:
+    "All cid psk_id id_cred_psk k3 ko y gx #i #j #k #l. 
+     AcceptR_PSK(cid,method_psk_variant1,psk_id,id_cred_psk,k3,ko)@i & 
+     SessionSecrets_R(cid,y,gx,ko)@i &
+     KU(ko)@j & CompromisePSK(psk_id)@k & HonestPSK(psk_id)@l &
+     i < k  // session completed before PSK compromise
+     ==> (Ex #t. LeakSessionKey(ko)@t)                  // session key was explicitly leaked
+         | (Ex #t. LeakShare(y)@t & t < k)              // or ephemeral share was leaked before PSK compromise
+         | (Ex #t. LeakShare(gx)@t & t < k)             // or partner's ephemeral share was leaked before PSK compromise
+    "
+
+// ******************************************************************
+// ************** Authentication (PSK Variant 1) *******************
+// ******************************************************************
+
+/*
+PSK Authentication Properties:
+
+- Mutual authentication: Both parties authenticate each other using shared PSK
+- Explicit key confirmation: After message 3, responder knows initiator has the key
+- Key compromise impersonation resistance: Compromise of PSK affects both directions
+
+Note: PSK authentication is symmetric, so compromise affects both directions equally.
+*/
+
+// Non-injective authentication from Responder's perspective
+lemma honestauthRI_PSK_non_inj:  
+    "All cid psk_id id_cred_psk k3 ko y gx #i #k. 
+     AcceptR_PSK(cid,method_psk_variant1,psk_id,id_cred_psk,k3,ko)@i & 
+     SessionSecrets_R(cid,y,gx,ko)@i &
+     HonestPSK(psk_id)@k 
+     ==> (Ex #t x gy k4 ko2 cid2. t < i & 
+          AcceptI_PSK(cid2,method_psk_variant1,psk_id,id_cred_psk,k3,k4,ko2)@t &
+          SessionSecrets_I(cid2,x,gy,ko2)@t)            // honest initiator session
+         | (Ex #t. CompromisePSK(psk_id)@t)             // or PSK was compromised
+         | (Ex #t. LeakShare(y)@t)                      // or responder share was leaked
+    "
+
+// Injective authentication (uniqueness) from Responder's perspective  
+lemma honestauthRI_PSK_unique:  
+    "All cid psk_id id_cred_psk k3 ko y gx #i #j #k. 
+     AcceptR_PSK(cid,method_psk_variant1,psk_id,id_cred_psk,k3,ko)@i & 
+     AcceptR_PSK(cid,method_psk_variant1,psk_id,id_cred_psk,k3,ko)@j & 
+     SessionSecrets_R(cid,y,gx,ko)@i &
+     HonestPSK(psk_id)@k  
+     ==> (Ex #t. CompromisePSK(psk_id)@t)              // PSK was compromised
+         | (Ex #t. LeakShare(y)@t)                     // or responder share was leaked
+         | (#i = #j)                                   // or same session
+    "
+
+// Non-injective authentication from Initiator's perspective
+lemma honestauthIR_PSK_non_inj:  
+    "All cid psk_id id_cred_psk k3 k4 ko x gy #i #k. 
+     AcceptI_PSK(cid,method_psk_variant1,psk_id,id_cred_psk,k3,k4,ko)@i &
+     SessionSecrets_I(cid,x,gy,ko)@i &
+     HonestPSK(psk_id)@k 
+     ==> (Ex #j y gx cid2 k3_r. j < i & 
+          DerivedR_PSK(cid2,psk_id,id_cred_psk,k3_r,y,gx)@j)  // responder derived session
+         | (Ex #t. CompromisePSK(psk_id)@t)             // or PSK was compromised  
+         | (Ex #t. LeakShare(x)@t)                      // or initiator share was leaked
+    "
+
+// Injective authentication from Initiator's perspective
+lemma honestauthIR_PSK_unique:  
+    "All cid psk_id id_cred_psk k3 k4 ko x gy #i #j #k. 
+     AcceptI_PSK(cid,method_psk_variant1,psk_id,id_cred_psk,k3,k4,ko)@i & 
+     AcceptI_PSK(cid,method_psk_variant1,psk_id,id_cred_psk,k3,k4,ko)@j & 
+     SessionSecrets_I(cid,x,gy,ko)@i &
+     HonestPSK(psk_id)@k  
+     ==> (Ex #t. CompromisePSK(psk_id)@t)              // PSK was compromised
+         | (Ex #t. LeakShare(x)@t)                     // or initiator share was leaked  
+         | (#i = #j)                                   // or same session
+    "
+
+// Session key agreement - both parties derive the same session key
+lemma sessionKeyAgreement_PSK:
+    "All cid1 cid2 psk_id id_cred_psk k3_i k3_r k4 ko_i ko_r x y gx gy #i #j #k.
+     AcceptI_PSK(cid1,method_psk_variant1,psk_id,id_cred_psk,k3_i,k4,ko_i)@i &
+     AcceptR_PSK(cid2,method_psk_variant1,psk_id,id_cred_psk,k3_r,ko_r)@j &
+     SessionSecrets_I(cid1,x,gy,ko_i)@i &
+     SessionSecrets_R(cid2,y,gx,ko_r)@j &
+     HonestPSK(psk_id)@k &
+     gx = exp('g',x) & gy = exp('g',y)  // matching DH shares
+     ==> ko_i = ko_r  // same session key derived
+    "
+
+// *********************************************************************
+// ************** Data Authentication (PSK Variant 1) *****************
+// *********************************************************************
+
+/*
+Transcript and Message Authentication:
+- Transcript hashes TH_2, TH_3, TH_4 are authenticated
+- Message contents including method, suites, EAD are authenticated
+- PSK variant 1 specific: ID_CRED_PSK in message_1 is authenticated but not encrypted
+*/
+
+// Data authentication from Initiator to Responder
+lemma data_authentication_I_to_R_PSK: 
+    "All psk_id id_cred_psk TH_2 TH_3 TH_4 suitesI EAD_1 EAD_2 EAD_3 m1 m2 m3 #i #j x gy PRK_out.
+     AcceptIData_PSK(PRK_out,method_psk_variant1,psk_id,id_cred_psk,x,gy,<TH_2,TH_3,TH_4,suitesI,EAD_1,EAD_2,EAD_3,m1,m2,m3>)@i
+     & HonestPSK(psk_id)@j 
+     ==> (Ex #l m11 m22. l < i & 
+          SendRData_PSK(method_psk_variant1,psk_id,<TH_2,suitesI,EAD_1,EAD_2,m11,m22>)@l)
+         | (Ex #l. l < i & CompromisePSK(psk_id)@l)
+         | (Ex #l. LeakShare(x)@l)      
+       "
+
+// Data authentication from Responder to Initiator  
+lemma data_authentication_R_to_I_PSK: 
+    "All psk_id id_cred_psk y gx TH_2 TH_3 TH_4 suitesI EAD_1 EAD_2 EAD_3 m1 m2 m3 #i #j PRK_out.
+     AcceptRData_PSK(PRK_out,method_psk_variant1,psk_id,id_cred_psk,y,gx,<TH_2,TH_3,TH_4,suitesI,EAD_1,EAD_2,EAD_3,m1,m2,m3>)@i
+     & HonestPSK(psk_id)@j 
+     ==> (Ex #l gy x m11 m22 m33. l < i & 
+          AcceptIData_PSK(PRK_out,method_psk_variant1,psk_id,id_cred_psk,x,gy,<TH_2,TH_3,TH_4,suitesI,EAD_1,EAD_2,EAD_3,m11,m22,m33>)@l)
+         | (Ex #l. l < i & CompromisePSK(psk_id)@l)
+         | (Ex #l. LeakShare(y)@l)
+       "
+
+// *******************************************************************
+// ************** Privacy Properties (PSK Variant 1) ****************
+// *******************************************************************
+
+/*
+Privacy Considerations for PSK Variant 1:
+- ID_CRED_PSK is sent in clear in message_1, revealing PSK identity
+- This enables tracking and correlation attacks
+- No protection against passive observers for PSK identity
+*/
+
+// PSK identity is revealed in variant 1 (negative property - this should be false)
+lemma psk_identity_privacy_variant1[output=[proverif]]:
+    "All cid psk_id id_cred_psk #i #j.
+     InitiatorStart_PSK(cid,psk_id,id_cred_psk)@i &
+     KU(id_cred_psk)@j
+     ==> F"  // This will fail, showing that ID_CRED_PSK is revealed
+
+// *******************************************************************
+// ************** Reflection Attacks  ********************************
+// *******************************************************************
+
+// Protection against reflection attacks where an agent talks to itself
+lemma no_reflection_attacks_RI_PSK:  
+    "All cid psk_id id_cred_psk k3 ko y gx #i #k. 
+     AcceptR_PSK(cid,method_psk_variant1,psk_id,id_cred_psk,k3,ko)@i & 
+     SessionSecrets_R(cid,y,gx,ko)@i &
+     HonestPSK(psk_id)@k 
+     ==> (Ex #t x gy k4 ko2 cid2. t < i & 
+          AcceptI_PSK(cid2,method_psk_variant1,psk_id,id_cred_psk,k3,k4,ko2)@t & 
+          SessionSecrets_I(cid2,x,gy,ko2)@t &
+          not(cid = cid2))                              // different connection IDs
+         | (Ex #t. CompromisePSK(psk_id)@t)             // or PSK was compromised
+         | (Ex #t. LeakShare(y)@t)                      // or responder share was leaked
+         | (Ex #t. LeakShare(gx)@t)                     // or initiator share was leaked
+    "
+
+lemma no_reflection_attacks_IR_PSK:  
+    "All cid psk_id id_cred_psk k3 k4 ko gy x #i #k. 
+     AcceptI_PSK(cid,method_psk_variant1,psk_id,id_cred_psk,k3,k4,ko)@i & 
+     SessionSecrets_I(cid,x,gy,ko)@i &
+     HonestPSK(psk_id)@k 
+     ==> (Ex #j y gx cid2 k3_r. j < i & 
+          DerivedR_PSK(cid2,psk_id,id_cred_psk,k3_r,y,gx)@j & 
+          not(cid = cid2))                              // different connection IDs
+         | (Ex #t. CompromisePSK(psk_id)@t)             // or PSK was compromised
+         | (Ex #t. LeakShare(x)@t)                      // or initiator share was leaked
+    "
+
+// *******************************************************************
+// ************** Additional Key Secrecy  ****************************
+// *******************************************************************
+
+// Secrecy of intermediate PRK values
+lemma secretR_PRK_2e_PSK: 
+   "All cid psk_id id_cred_psk prk2e prk3e2m prk4e3m ko ks2 k3 iv3 y gx #i #j #k.
+    SecretsR_PSK(cid,psk_id,id_cred_psk,prk2e,prk3e2m,prk4e3m,ko,ks2,k3,iv3,y,gx)@i
+    & KU(prk2e)@j & HonestPSK(psk_id)@k 
+    ==> (Ex #t. CompromisePSK(psk_id)@t & t < i) 
+        | (Ex #t. LeakSessionKey(ko)@t) 
+        | (Ex #t. LeakShare(y)@t)  
+        | (Ex #t. LeakShare(gx)@t)  
+    "
+
+// Secrecy of keystream for message 2
+lemma secretR_ks2_PSK: 
+   "All cid psk_id id_cred_psk prk2e prk3e2m prk4e3m ko ks2 k3 iv3 y gx #i #j #k.
+    SecretsR_PSK(cid,psk_id,id_cred_psk,prk2e,prk3e2m,prk4e3m,ko,ks2,k3,iv3,y,gx)@i
+    & KU(ks2)@j & HonestPSK(psk_id)@k 
+    ==> (Ex #t. CompromisePSK(psk_id)@t & t < i) 
+        | (Ex #t. LeakSessionKey(ko)@t) 
+        | (Ex #t. LeakShare(y)@t)  
+        | (Ex #t. LeakShare(gx)@t)  
+    "
+
+// Secrecy of AEAD key for message 3
+lemma secretR_k3_PSK: 
+   "All cid psk_id id_cred_psk prk2e prk3e2m prk4e3m ko ks2 k3 iv3 y gx #i #j #k.
+    SecretsR_PSK(cid,psk_id,id_cred_psk,prk2e,prk3e2m,prk4e3m,ko,ks2,k3,iv3,y,gx)@i
+    & KU(k3)@j & HonestPSK(psk_id)@k 
+    ==> (Ex #t. CompromisePSK(psk_id)@t & t < i) 
+        | (Ex #t. LeakSessionKey(ko)@t) 
+        | (Ex #t. LeakShare(y)@t)  
+        | (Ex #t. LeakShare(gx)@t)  
+    "

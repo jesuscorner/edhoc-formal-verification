@@ -1,0 +1,377 @@
+/*
+ * Protocol:   EDHOC PSK Variant 1
+ * Reference:  https://datatracker.ietf.org/doc/draft-lopez-lake-edhoc-psk/01/
+ *             Based on RFC 9528 (https://datatracker.ietf.org/doc/rfc9528/)
+ *
+ * EDHOC PSK authentication with variant 1, where ID_CRED_PSK is sent 
+ * in the clear in message_1. This provides PSK-based authentication
+ * for ephemeral Diffie-Hellman key exchange.
+ *
+ * Variant 1 Message Flow:
+ * 
+ * Initiator                                                  Responder
+ * |          METHOD, SUITES_I, G_X, C_I, ID_CRED_PSK, EAD_1           |
+ * +------------------------------------------------------------------>|
+ * |                     message_1                                     |
+ * |                                                                   |
+ * |                   G_Y, Enc( C_R, MAC_2, EAD_2 )                  |
+ * |<------------------------------------------------------------------+
+ * |                     message_2                                     |
+ * |                                                                   |
+ * |                           AEAD( EAD_3 )                           |
+ * +------------------------------------------------------------------>|
+ * |                     message_3                                     |
+ * |                                                                   |
+ * |                           AEAD( EAD_4 )                           |
+ * |<- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - +
+ * |                     message_4 (optional)                         |
+ *
+ * Security Properties to verify:
+ * - Forward secrecy
+ * - Mutual authentication  
+ * - Session key secrecy
+ * - Identity protection properties
+ * - Resistance to replay attacks
+ */
+
+theory edhoc_psk_variant1
+
+begin
+
+builtins: diffie-hellman
+
+functions: 
+    // Method identifiers for PSK authentication
+    method_psk_variant1/0,
+    
+    // Cryptographic parameters
+    hash_length/0, edhoc_mac_length/0, key_length/0, iv_length/0, plaintext_length/0,
+    
+    // Constants
+    suitesIConst/0, suitesRConst/0,
+    error_code_one/0, error_code_two/0,
+    
+    // Key derivation and cryptographic functions
+    edhoc_kdf/4,           // EDHOC key derivation function
+    aeadenc/4, aeaddec/3 [destructor],  // AEAD encryption/decryption
+    hash/1,                // Hash function
+    hkdfextract/2,         // HKDF-Extract
+    hkdfexpand/2,          // HKDF-Expand
+    
+    // PSK-related functions
+    psk_cred/1,            // PSK credential
+    psk_id/1,              // PSK identifier (ID_CRED_PSK)
+    get_psk/1 [destructor], // Extract PSK from credential
+    
+    // Utility functions
+    wrap/1,                // Wrapper for encoding
+    decxor/2,              // XOR decryption for stream cipher
+    check_grp/1,           // Group element validation
+    grpid/0                // Group identifier
+
+equations: 
+    aeaddec(aeadenc(m,r,k,ad),k,ad) = m,
+    get_psk(psk_cred(psk)) = psk
+
+// Global restrictions for security modeling
+restriction Equality:
+    "All x y #i. Eq(x,y) @i ==> x = y"
+
+restriction Inequality: 
+    "All x #i. Neq(x,x) @i ==> F"
+
+// Honest party restrictions
+restriction OnlyOnceHonest:
+    "All pk #i #j. Honest(pk)@i & Honest(pk)@j ==> #i = #j"
+
+// Compromise processes for security analysis (with conditional compilation)
+#ifdef LeakShare
+let CompromiseShare(x) = 
+    event LeakShare(x);
+    out(x)
+#else
+let CompromiseShare(x) = 
+    event LeakShare('null');
+    0
+#endif
+
+#ifdef LeakPSK
+let CompromisePSK(psk) = 
+    event CompromisePSK(psk);
+    out(psk)
+#else
+let CompromisePSK(psk) = 
+    event CompromisePSK('null');
+    0
+#endif
+
+#ifdef LeakSessionKey
+let leakSKey(k) = 
+    event LeakSessionKey(k);
+    out(k)
+#else
+let leakSKey(k) = 
+    event LeakSessionKey('null');
+    0
+#endif
+
+#ifdef NonRepudiation
+// Judge processes for non-repudiation (if enabled)
+let JudgeR = 0  // Placeholder for PSK variant
+let JudgeI = 0  // Placeholder for PSK variant
+#else
+let JudgeR = 0
+let JudgeI = 0
+#endif
+
+/*
+ * EDHOC PSK Variant 1 Initiator
+ * 
+ * Parameters:
+ * - ~cid: Connection identifier
+ * - ~psk: Pre-shared key
+ * - id_cred_psk: PSK credential identifier
+ * - expected_responder_id: Expected responder's PSK ID (for authentication)
+ */
+let I(~cid, ~psk, id_cred_psk, expected_responder_id) =
+    // Input protocol parameters from attacker
+    in(<method, suitesI, C_I, EAD_1>);
+    
+    // Ensure PSK method is used
+    event MethodOk(method);
+    event Eq(method, method_psk_variant1);
+    if (method = method_psk_variant1) then
+    (
+        new ~X;  // Generate ephemeral DH share
+        new ~EAD_3;  // Fresh EAD_3 for testing secrecy
+        event Share(~X);
+        
+        (
+        CompromiseShare(~X) |  // Allow compromise of ephemeral share for security analysis
+        
+        let G_X = 'g'^~X in
+        let CRED_PSK = psk_cred(~psk) in
+        let ID_CRED_PSK = psk_id(id_cred_psk) in
+        
+        // Message 1: Include ID_CRED_PSK in the clear (Variant 1 characteristic)
+        let m1 = <method, suitesI, G_X, C_I, ID_CRED_PSK, EAD_1> in
+        
+        event InitiatorStart_PSK(~cid, ~psk, ID_CRED_PSK);
+        event Neq(ID_CRED_PSK, grpid);  // PSK ID should not be group ID
+        out(m1);
+        
+        // Receive message 2
+        in(m2);
+        let <G_Y, CIPHERTEXT_2, C_R> = m2 in
+        
+        // Compute transcript hashes
+        let TH_1 = hash(wrap(method) || wrap(suitesI) || wrap(G_X) || wrap(C_I) || wrap(ID_CRED_PSK) || EAD_1) in
+        let TH_2 = hash(wrap(G_Y) || C_R || wrap(TH_1)) in
+        
+        // Compute shared secret
+        let G_YX = G_Y^~X in
+        
+        // Key derivation for PSK variant 1
+        let PRK_2e = hkdfextract('null', G_YX) in
+        
+        // Extract salt for PSK-based key derivation (salt3e_2m in the draft)
+        let SALT_3e2m = edhoc_kdf(PRK_2e, 'salt_3e2m', TH_2, hash_length) in
+        let PRK_3e2m = hkdfextract(SALT_3e2m, CRED_PSK) in
+        let PRK_4e3m = PRK_3e2m in
+        
+        // Decrypt message 2
+        let KEYSTREAM_2 = edhoc_kdf(PRK_2e, 'keystream_2', TH_2, plaintext_length) in
+        let plaintext_2 = decxor(CIPHERTEXT_2, KEYSTREAM_2) in
+        let <ID_CRED_PSK_R, MAC_2, EAD_2> = plaintext_2 in
+        
+        // Group element validation (security check)
+        event GroupCheck(G_Y);
+        if (check_grp(G_Y) = grpid) then 0 else
+        
+        // Verify responder's PSK identity
+        event Eq(ID_CRED_PSK_R, expected_responder_id);
+        if (ID_CRED_PSK_R = expected_responder_id) then
+        (
+            event DerivedIShared_PSK(~cid, ID_CRED_PSK, ID_CRED_PSK_R, PRK_3e2m, ~X, G_Y);
+            
+            // Verify MAC_2 using PSK-derived key
+            let context_2 = <C_R, ID_CRED_PSK, TH_2, CRED_PSK, EAD_2> in
+            let expected_MAC_2 = edhoc_kdf(PRK_3e2m, 'mac_2', context_2, edhoc_mac_length) in
+            
+            event Eq(MAC_2, expected_MAC_2);
+            if (MAC_2 = expected_MAC_2) then
+            (
+                // Compute TH_3 including PSK credential
+                let TH_3 = hash(wrap(TH_2) || plaintext_2 || CRED_PSK) in
+                event THIShared_PSK(ID_CRED_PSK, TH_3);
+                
+                // Prepare message 3 - AEAD encrypted EAD_3
+                let K_3 = edhoc_kdf(PRK_4e3m, 'k_3', TH_3, key_length) in
+                let IV_3 = edhoc_kdf(PRK_4e3m, 'iv_3', TH_3, iv_length) in
+                let plaintext_3 = ~EAD_3 in
+                let m3 = aeadenc(plaintext_3, 'rep', K_3, IV_3) in
+                
+                // Compute final transcript hash and output key
+                let TH_4 = hash(wrap(TH_3) || plaintext_3 || CRED_PSK) in
+                let PRK_out = edhoc_kdf(PRK_4e3m, 'prk_out', TH_4, hash_length) in
+                
+                event AcceptI_PSK(~cid, method_psk_variant1, ID_CRED_PSK, ID_CRED_PSK_R, PRK_3e2m, PRK_4e3m, PRK_out);
+                event SessionSecrets_I(~cid, ~X, G_Y, PRK_out);
+                event SecretsI_PSK(~cid, ID_CRED_PSK, ID_CRED_PSK_R, PRK_2e, PRK_3e2m, PRK_4e3m, PRK_out, KEYSTREAM_2, K_3, IV_3, ~X, G_Y);
+                event AcceptIData_PSK(PRK_out, method_psk_variant1, ID_CRED_PSK, ID_CRED_PSK_R, ~X, G_Y, <TH_2, TH_3, TH_4, suitesI, EAD_1, EAD_2, ~EAD_3, m1, m2, m3>);
+                
+                out(m3);
+                
+                (
+                    leakSKey(PRK_out)  // Allow session key compromise for security analysis
+                )
+            )
+        )
+        )
+    )
+
+/*
+ * EDHOC PSK Variant 1 Responder
+ *
+ * Parameters:
+ * - ~cid: Connection identifier  
+ * - ~psk: Pre-shared key
+ * - id_cred_psk: PSK credential identifier
+ * - expected_initiator_id: Expected initiator's PSK ID (for authentication)
+ */
+let R(~cid, ~psk, id_cred_psk, expected_initiator_id) =
+    // Receive message 1
+    in(m1);
+    let <method, suitesI, G_X, C_I, ID_CRED_PSK_I, EAD_1> = m1 in
+    
+    // Ensure PSK method is used and verify initiator identity
+    event MethodOk(method);
+    event Eq(method, method_psk_variant1);
+    if (method = method_psk_variant1) then
+    event Eq(ID_CRED_PSK_I, expected_initiator_id);
+    if (ID_CRED_PSK_I = expected_initiator_id) then
+    (
+        new ~Y;  // Generate ephemeral DH share
+        new ~EAD_2;  // Fresh EAD_2
+        new ~EAD_4;  // Fresh EAD_4 for optional message 4
+        
+        event Share(~Y);
+        
+        (
+        CompromiseShare(~Y) |  // Allow compromise of ephemeral share
+        
+        let G_Y = 'g'^~Y in
+        let CRED_PSK = psk_cred(~psk) in
+        let ID_CRED_PSK = psk_id(id_cred_psk) in
+        
+        // Compute transcript hashes
+        let TH_1 = hash(wrap(method) || wrap(suitesI) || wrap(G_X) || wrap(C_I) || wrap(ID_CRED_PSK_I) || EAD_1) in
+        
+        // Group element validation
+        event GroupCheck(G_X);
+        if (check_grp(G_X) = grpid) then 0 else
+        
+        let C_R = ~cid in  // Use connection ID as C_R
+        let TH_2 = hash(wrap(G_Y) || C_R || wrap(TH_1)) in
+        
+        // Compute shared secret
+        let G_YX = G_X^~Y in
+        
+        // Key derivation for PSK variant 1
+        let PRK_2e = hkdfextract('null', G_YX) in
+        let SALT_3e2m = edhoc_kdf(PRK_2e, 'salt_3e2m', TH_2, hash_length) in
+        let PRK_3e2m = hkdfextract(SALT_3e2m, CRED_PSK) in
+        let PRK_4e3m = PRK_3e2m in
+        
+        event DerivedR_PSK(~cid, ID_CRED_PSK_I, ID_CRED_PSK, PRK_3e2m, ~Y, G_X);
+        event ResponderStart_PSK(~cid, ~psk, ID_CRED_PSK_I);
+        event Neq(ID_CRED_PSK, grpid);  // PSK ID should not be group ID
+        
+        // Compute MAC_2 for authentication
+        let context_2 = <C_R, ID_CRED_PSK_I, TH_2, CRED_PSK, ~EAD_2> in
+        let MAC_2 = edhoc_kdf(PRK_3e2m, 'mac_2', context_2, edhoc_mac_length) in
+        
+        // Encrypt message 2 content
+        let KEYSTREAM_2 = edhoc_kdf(PRK_2e, 'keystream_2', TH_2, plaintext_length) in
+        let plaintext_2 = <ID_CRED_PSK, MAC_2, ~EAD_2> in
+        let CIPHERTEXT_2 = decxor(plaintext_2, KEYSTREAM_2) in  // XOR encryption
+        
+        let m2 = <G_Y, CIPHERTEXT_2, C_R> in
+        event SendRData_PSK(method_psk_variant1, ID_CRED_PSK_I, <TH_2, suitesI, EAD_1, ~EAD_2, m1, m2>);
+        out(m2);
+        
+        // Receive message 3
+        in(m3);
+        
+        // Decrypt and verify message 3
+        let TH_3 = hash(wrap(TH_2) || plaintext_2 || CRED_PSK) in
+        event THRShared_PSK(ID_CRED_PSK, TH_3);
+        
+        let K_3 = edhoc_kdf(PRK_4e3m, 'k_3', TH_3, key_length) in
+        let IV_3 = edhoc_kdf(PRK_4e3m, 'iv_3', TH_3, iv_length) in
+        let plaintext_3 = aeaddec(m3, K_3, IV_3) in
+        
+        // Compute final keys
+        let TH_4 = hash(wrap(TH_3) || plaintext_3 || CRED_PSK) in
+        let PRK_out = edhoc_kdf(PRK_4e3m, 'prk_out', TH_4, hash_length) in
+        
+        event AcceptR_PSK(~cid, method_psk_variant1, ID_CRED_PSK_I, ID_CRED_PSK, PRK_3e2m, PRK_out);
+        event SessionSecrets_R(~cid, ~Y, G_X, PRK_out);
+        event SecretsR_PSK(~cid, ID_CRED_PSK_I, ID_CRED_PSK, PRK_2e, PRK_3e2m, PRK_4e3m, PRK_out, KEYSTREAM_2, K_3, IV_3, ~Y, G_X);
+        event AcceptRData_PSK(PRK_out, method_psk_variant1, ID_CRED_PSK_I, ID_CRED_PSK, ~Y, G_X, <TH_2, TH_3, TH_4, suitesI, EAD_1, ~EAD_2, plaintext_3, m1, m2, m3>);
+        
+        // Optional message 4 for mutual authentication
+        (
+            let K_4 = edhoc_kdf(PRK_4e3m, 'k_4', TH_4, key_length) in
+            let IV_4 = edhoc_kdf(PRK_4e3m, 'iv_4', TH_4, iv_length) in
+            let m4 = aeadenc(~EAD_4, 'rep', K_4, IV_4) in
+            out(m4);
+            leakSKey(PRK_out)
+        |
+            leakSKey(PRK_out)
+        )
+        )
+    )
+
+/*
+ * PSK Setup Process
+ * Models the establishment of shared PSKs between parties
+ */
+let PSKSetup() =
+    new ~psk;  // Generate shared PSK
+    new ~id_i;  // Initiator's PSK identity
+    new ~id_r;  // Responder's PSK identity
+    
+    event PSKEstablished(~psk, ~id_i, ~id_r);
+    event HonestPSK(psk_id(~id_i));
+    event HonestPSK(psk_id(~id_r));
+    event Honest(psk_id(~id_i));
+    event Honest(psk_id(~id_r));
+    event PSKGenerated(~psk);
+    
+    (
+        I(~id_i, ~psk, ~id_i, ~id_r) |
+        R(~id_r, ~psk, ~id_r, ~id_i) |
+        // Allow PSK compromise for security analysis
+        event CompromisePSK(~psk); out(~psk)
+    )
+
+// Additional helper processes removed - using global definitions above
+
+// Main process
+let System = 
+    ( PSKSetup() | PSKSetup() | PSKSetup() )
+
+process: System
+
+// Restrictions for protocol correctness
+restriction MethodOk:
+    "All method #i. MethodOk(method) @i ==> method = method_psk_variant1"
+
+restriction GroupCheck:
+    "All elem #i. GroupCheck(elem) @i ==> not (elem = grpid)"
+
+// Include property definitions
+#include "LakePropertiesPSK.splib"
+
+end

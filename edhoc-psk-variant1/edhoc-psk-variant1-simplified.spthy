@@ -1,0 +1,193 @@
+/*
+ * Simplified EDHOC PSK Variant 1 Model for Initial Verification
+ * 
+ * This is a reduced version of the full model to enable faster verification
+ * and identify specific problematic areas.
+ */
+
+theory edhoc_psk_variant1_simplified
+
+begin
+
+builtins: diffie-hellman
+
+functions: 
+    method_psk_variant1/0,
+    hash_length/0, edhoc_mac_length/0, key_length/0, iv_length/0, plaintext_length/0,
+    edhoc_kdf/4,
+    aeadenc/4, aeaddec/3 [destructor],
+    hash/1,
+    hkdfextract/2,
+    hkdfexpand/2,
+    psk_cred/1,
+    psk_id/1,
+    get_psk/1 [destructor],
+    wrap/1,
+    decxor/2,
+    check_grp/1,
+    grpid/0
+
+equations: 
+    aeaddec(aeadenc(m,r,k,ad),k,ad) = m,
+    get_psk(psk_cred(psk)) = psk
+
+restriction Equality:
+    "All x y #i. Eq(x,y) @i ==> x = y"
+
+restriction Inequality: 
+    "All x #i. Neq(x,x) @i ==> F"
+
+// Simplified Initiator (single session)
+let I_simple(~cid, ~psk, id_cred_psk, expected_responder_id) =
+    in(<method, suitesI, C_I, EAD_1>);
+    event Eq(method, method_psk_variant1);
+    if (method = method_psk_variant1) then
+    (
+        new ~X;
+        new ~EAD_3;
+        event Share(~X);
+        
+        let G_X = 'g'^~X in
+        let CRED_PSK = psk_cred(~psk) in
+        let ID_CRED_PSK = psk_id(id_cred_psk) in
+        let m1 = <method, suitesI, G_X, C_I, ID_CRED_PSK, EAD_1> in
+        
+        event InitiatorStart_PSK(~cid, ~psk, ID_CRED_PSK);
+        out(m1);
+        
+        in(m2);
+        let <G_Y, CIPHERTEXT_2, C_R> = m2 in
+        
+        let TH_1 = hash(wrap(method) || wrap(suitesI) || wrap(G_X) || wrap(C_I) || wrap(ID_CRED_PSK) || EAD_1) in
+        let TH_2 = hash(wrap(G_Y) || C_R || wrap(TH_1)) in
+        let G_YX = G_Y^~X in
+        let PRK_2e = hkdfextract('null', G_YX) in
+        let SALT_3e2m = edhoc_kdf(PRK_2e, 'salt_3e2m', TH_2, hash_length) in
+        let PRK_3e2m = hkdfextract(SALT_3e2m, CRED_PSK) in
+        let PRK_4e3m = PRK_3e2m in
+        
+        let KEYSTREAM_2 = edhoc_kdf(PRK_2e, 'keystream_2', TH_2, plaintext_length) in
+        let plaintext_2 = decxor(CIPHERTEXT_2, KEYSTREAM_2) in
+        let <ID_CRED_PSK_R, MAC_2, EAD_2> = plaintext_2 in
+        
+        event Eq(ID_CRED_PSK_R, expected_responder_id);
+        if (ID_CRED_PSK_R = expected_responder_id) then
+        (
+            let context_2 = <C_R, ID_CRED_PSK, TH_2, CRED_PSK, EAD_2> in
+            let expected_MAC_2 = edhoc_kdf(PRK_3e2m, 'mac_2', context_2, edhoc_mac_length) in
+            
+            event Eq(MAC_2, expected_MAC_2);
+            if (MAC_2 = expected_MAC_2) then
+            (
+                let TH_3 = hash(wrap(TH_2) || plaintext_2 || CRED_PSK) in
+                let K_3 = edhoc_kdf(PRK_4e3m, 'k_3', TH_3, key_length) in
+                let IV_3 = edhoc_kdf(PRK_4e3m, 'iv_3', TH_3, iv_length) in
+                let plaintext_3 = ~EAD_3 in
+                let m3 = aeadenc(plaintext_3, 'rep', K_3, IV_3) in
+                
+                let TH_4 = hash(wrap(TH_3) || plaintext_3 || CRED_PSK) in
+                let PRK_out = edhoc_kdf(PRK_4e3m, 'prk_out', TH_4, hash_length) in
+                
+                event AcceptI_PSK(~cid, method_psk_variant1, ID_CRED_PSK, ID_CRED_PSK_R, PRK_3e2m, PRK_4e3m, PRK_out);
+                event SessionSecrets_I(~cid, ~X, G_Y, PRK_out);
+                out(m3);
+                0
+            )
+        )
+    )
+
+// Simplified Responder (single session)
+let R_simple(~cid, ~psk, id_cred_psk, expected_initiator_id) =
+    in(m1);
+    let <method, suitesI, G_X, C_I, ID_CRED_PSK_I, EAD_1> = m1 in
+    
+    event Eq(method, method_psk_variant1);
+    if (method = method_psk_variant1) then
+    event Eq(ID_CRED_PSK_I, expected_initiator_id);
+    if (ID_CRED_PSK_I = expected_initiator_id) then
+    (
+        new ~Y;
+        new ~EAD_2;
+        event Share(~Y);
+        
+        let G_Y = 'g'^~Y in
+        let CRED_PSK = psk_cred(~psk) in
+        let ID_CRED_PSK = psk_id(id_cred_psk) in
+        
+        let TH_1 = hash(wrap(method) || wrap(suitesI) || wrap(G_X) || wrap(C_I) || wrap(ID_CRED_PSK_I) || EAD_1) in
+        let C_R = ~cid in
+        let TH_2 = hash(wrap(G_Y) || C_R || wrap(TH_1)) in
+        let G_YX = G_X^~Y in
+        let PRK_2e = hkdfextract('null', G_YX) in
+        let SALT_3e2m = edhoc_kdf(PRK_2e, 'salt_3e2m', TH_2, hash_length) in
+        let PRK_3e2m = hkdfextract(SALT_3e2m, CRED_PSK) in
+        let PRK_4e3m = PRK_3e2m in
+        
+        event ResponderStart_PSK(~cid, ~psk, ID_CRED_PSK_I);
+        
+        let context_2 = <C_R, ID_CRED_PSK_I, TH_2, CRED_PSK, ~EAD_2> in
+        let MAC_2 = edhoc_kdf(PRK_3e2m, 'mac_2', context_2, edhoc_mac_length) in
+        
+        let KEYSTREAM_2 = edhoc_kdf(PRK_2e, 'keystream_2', TH_2, plaintext_length) in
+        let plaintext_2 = <ID_CRED_PSK, MAC_2, ~EAD_2> in
+        let CIPHERTEXT_2 = decxor(plaintext_2, KEYSTREAM_2) in
+        
+        let m2 = <G_Y, CIPHERTEXT_2, C_R> in
+        out(m2);
+        
+        in(m3);
+        
+        let TH_3 = hash(wrap(TH_2) || plaintext_2 || CRED_PSK) in
+        let K_3 = edhoc_kdf(PRK_4e3m, 'k_3', TH_3, key_length) in
+        let IV_3 = edhoc_kdf(PRK_4e3m, 'iv_3', TH_3, iv_length) in
+        let plaintext_3 = aeaddec(m3, K_3, IV_3) in
+        
+        let TH_4 = hash(wrap(TH_3) || plaintext_3 || CRED_PSK) in
+        let PRK_out = edhoc_kdf(PRK_4e3m, 'prk_out', TH_4, hash_length) in
+        
+        event AcceptR_PSK(~cid, method_psk_variant1, ID_CRED_PSK_I, ID_CRED_PSK, PRK_3e2m, PRK_out);
+        event SessionSecrets_R(~cid, ~Y, G_X, PRK_out);
+        0
+    )
+
+// Simplified PSK Setup (single pair)
+let PSKSetup_simple() =
+    new ~psk;
+    new ~id_i;
+    new ~id_r;
+    
+    event PSKEstablished(~psk, ~id_i, ~id_r);
+    event HonestPSK(psk_id(~id_i));
+    event HonestPSK(psk_id(~id_r));
+    event PSKGenerated(~psk);
+    
+    (
+        I_simple(~id_i, ~psk, ~id_i, ~id_r) |
+        R_simple(~id_r, ~psk, ~id_r, ~id_i)
+    )
+
+// Main process - only one PSK setup
+process: PSKSetup_simple()
+
+// Basic security property - PSK secrecy
+lemma secretPSK_simple: 
+   "All psk #i #j. PSKGenerated(psk)@i & KU(psk)@j ==> F"
+
+// Basic executability
+lemma executableR_simple: 
+    exists-trace
+    "Ex cid psk_id id_cred_psk k3 ko #i. AcceptR_PSK(cid,method_psk_variant1,psk_id,id_cred_psk,k3,ko)@i"
+
+lemma executableI_simple: 
+    exists-trace
+    "Ex cid psk_id id_cred_psk k3 k4 ko #i. AcceptI_PSK(cid,method_psk_variant1,psk_id,id_cred_psk,k3,k4,ko)@i"
+
+// Basic session key secrecy
+lemma secretR_PSK_simple: 
+   "All cid psk_id id_cred_psk k3 ko y gx #i #j #k. 
+    AcceptR_PSK(cid,method_psk_variant1,psk_id,id_cred_psk,k3,ko)@i & 
+    SessionSecrets_R(cid,y,gx,ko)@i &
+    KU(ko)@j & HonestPSK(psk_id)@k 
+    ==> F"
+
+end
